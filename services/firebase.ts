@@ -69,6 +69,30 @@ export const initFirebase = async (config: FirebaseOptions): Promise<FirebaseIni
   }
 };
 
+/**
+ * Simulates signing in a user.
+ */
+export const mockSignIn = async (uid: string, app: FirebaseApp): Promise<Auth> => {
+  await new Promise(resolve => setTimeout(resolve, 400));
+  
+  return {
+    app,
+    currentUser: { uid }
+  };
+};
+
+/**
+ * Simulates signing out.
+ */
+export const mockSignOut = async (app: FirebaseApp): Promise<Auth> => {
+  await new Promise(resolve => setTimeout(resolve, 200));
+  
+  return {
+    app,
+    currentUser: null
+  };
+};
+
 export const getConfigDisplay = (config: any) => {
   if (!config || !config.apiKey) return { ...config };
   

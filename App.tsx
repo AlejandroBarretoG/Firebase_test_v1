@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { initFirebase, getConfigDisplay, FirebaseApp } from './services/firebase';
+import { initFirebase, getConfigDisplay, mockSignIn, FirebaseApp, Auth } from './services/firebase';
+import { mockWriteUserData, mockGetUserData } from './services/firestore_mock';
 import { runGeminiTests } from './services/gemini';
 import { StatusCard } from './components/StatusCard';
-import { ShieldCheck, Server, Database, Settings, XCircle, Code2, ChevronDown, ChevronUp, Bot, Sparkles, KeyRound, Cpu } from 'lucide-react';
+import { ShieldCheck, Server, Database, Settings, XCircle, Code2, ChevronDown, ChevronUp, Bot, Sparkles, KeyRound, Cpu, UserCircle } from 'lucide-react';
 
 interface TestStep {
   id: string;
@@ -34,7 +35,9 @@ const App: React.FC = () => {
   
   // Firebase State
   const [firebaseInstance, setFirebaseInstance] = useState<FirebaseApp | null>(null);
+  const [firebaseAuth, setFirebaseAuth] = useState<Auth | null>(null);
   const [firebaseConfigInput, setFirebaseConfigInput] = useState<string>(JSON.stringify(DEFAULT_FIREBASE_CONFIG, null, 2));
+  const [testUid, setTestUid] = useState<string>('test-user-123');
   const [showConfig, setShowConfig] = useState(true);
   
   // Gemini State
@@ -45,7 +48,10 @@ const App: React.FC = () => {
   const [firebaseSteps, setFirebaseSteps] = useState<TestStep[]>([
     { id: 'config', title: 'Validación de Configuración', description: 'Analizando el JSON proporcionado.', status: 'idle' },
     { id: 'init', title: 'Inicialización del SDK', description: 'Ejecutando initializeApp() con la configuración.', status: 'idle' },
-    { id: 'auth_module', title: 'Servicio de Autenticación', description: 'Verificando la instanciación del módulo Auth.', status: 'idle' }
+    { id: 'auth_module', title: 'Servicio de Autenticación', description: 'Verificando la instanciación del módulo Auth.', status: 'idle' },
+    { id: 'auth_login', title: 'Simulación de Login', description: 'Estableciendo usuario activo (UID).', status: 'idle' },
+    { id: 'db_write', title: 'Escritura Protegida (BD)', description: 'Guardando datos en /users/{uid}/data.', status: 'idle' },
+    { id: 'db_read', title: 'Lectura Protegida (BD)', description: 'Recuperando datos propios del usuario.', status: 'idle' }
   ]);
 
   const [geminiSteps, setGeminiSteps] = useState<TestStep[]>([
@@ -69,6 +75,7 @@ const App: React.FC = () => {
   const runFirebaseTests = async () => {
     setFirebaseSteps(prev => prev.map(s => ({ ...s, status: 'idle', details: undefined })));
     setFirebaseInstance(null);
+    setFirebaseAuth(null);
     
     // 1. Check Config
     updateStep('firebase', 'config', { status: 'loading' });
@@ -105,17 +112,71 @@ const App: React.FC = () => {
       return;
     }
 
-    // 3. Check Auth
+    // 3. Check Auth Module
     updateStep('firebase', 'auth_module', { status: 'loading' });
     await new Promise(resolve => setTimeout(resolve, 600));
     
     if (result.auth) {
        updateStep('firebase', 'auth_module', { 
         status: 'success', 
-        details: `Auth SDK cargado correctamente.\nCurrent User: ${result.auth.currentUser ? result.auth.currentUser.uid : 'null (No hay usuario logueado)'}`
+        details: `Auth SDK preparado.`
       });
     } else {
        updateStep('firebase', 'auth_module', { status: 'error', details: 'No se pudo obtener la instancia de Auth.' });
+       return;
+    }
+
+    // 4. Simulate Login
+    updateStep('firebase', 'auth_login', { status: 'loading' });
+    if (!testUid.trim()) {
+      updateStep('firebase', 'auth_login', { status: 'error', details: 'Se requiere un UID de prueba para simular el login.' });
+      return;
+    }
+
+    try {
+      const authResult = await mockSignIn(testUid, result.app!);
+      setFirebaseAuth(authResult);
+      updateStep('firebase', 'auth_login', { 
+        status: 'success', 
+        details: `Usuario autenticado (Simulado):\nUID: ${authResult.currentUser?.uid}\nEstado: Sesión Activa`
+      });
+    } catch (e: any) {
+      updateStep('firebase', 'auth_login', { status: 'error', details: e.message });
+      return;
+    }
+
+    // 5. DB Write (Protected by UID)
+    updateStep('firebase', 'db_write', { status: 'loading' });
+    try {
+      const docId = 'profile_v1';
+      const sampleData = { role: 'tester', lastLogin: new Date().toISOString() };
+      const writeResult = await mockWriteUserData(testUid, docId, sampleData);
+      
+      updateStep('firebase', 'db_write', { 
+        status: 'success', 
+        details: `Escritura exitosa en ruta protegida:\n${writeResult.path}\nDatos: ${JSON.stringify(sampleData)}`
+      });
+    } catch (e: any) {
+      updateStep('firebase', 'db_write', { status: 'error', details: `Error de escritura: ${e.message}` });
+      return;
+    }
+
+    // 6. DB Read (Protected by UID)
+    updateStep('firebase', 'db_read', { status: 'loading' });
+    try {
+      const docId = 'profile_v1';
+      const data = await mockGetUserData(testUid, docId);
+      
+      if (data) {
+        updateStep('firebase', 'db_read', { 
+          status: 'success', 
+          details: `Lectura exitosa. Verificando propiedad:\nOwner: ${data._meta.createdBy} (Coincide con UID)\nData: ${JSON.stringify(data)}`
+        });
+      } else {
+        throw new Error("El documento no se encontró o devolvió null.");
+      }
+    } catch (e: any) {
+      updateStep('firebase', 'db_read', { status: 'error', details: `Error de lectura: ${e.message}` });
     }
   };
 
@@ -220,7 +281,7 @@ const App: React.FC = () => {
           </h1>
           <p className="text-slate-500 mt-2">
             {mode === 'firebase' 
-              ? 'Herramienta de diagnóstico para verificar integración de Firebase SDK.' 
+              ? 'Herramienta de diagnóstico para verificar integración de Firebase SDK y simulación Auth/DB.' 
               : 'Suite de pruebas para validar conectividad y funciones de Gemini API.'}
           </p>
         </div>
@@ -233,7 +294,7 @@ const App: React.FC = () => {
           >
             <div className="flex items-center gap-2">
               {mode === 'firebase' ? <Code2 size={20} className="text-orange-500" /> : <KeyRound size={20} className="text-blue-500" />}
-              {mode === 'firebase' ? 'Configuración Firebase (JSON)' : 'Configuración Gemini'}
+              {mode === 'firebase' ? 'Configuración Firebase & Auth' : 'Configuración Gemini'}
             </div>
             {showConfig ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </button>
@@ -241,25 +302,46 @@ const App: React.FC = () => {
           {showConfig && (
             <div className="p-4">
               {mode === 'firebase' ? (
-                <>
-                  <p className="text-sm text-slate-500 mb-2">
-                    Pega tu objeto <code>firebaseConfig</code> aquí.
-                  </p>
-                  <textarea
-                    value={firebaseConfigInput}
-                    onChange={(e) => setFirebaseConfigInput(e.target.value)}
-                    className="w-full h-48 p-4 font-mono text-xs md:text-sm bg-slate-900 text-green-400 rounded-lg border border-slate-300 outline-none resize-y"
-                    spellCheck={false}
-                  />
-                  <div className="mt-2 text-right">
-                     <button 
-                       onClick={() => setFirebaseConfigInput(JSON.stringify(DEFAULT_FIREBASE_CONFIG, null, 2))}
-                       className="text-xs text-slate-400 hover:text-slate-600 underline"
-                     >
-                       Restaurar defecto
-                     </button>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm text-slate-500 mb-2">
+                      Pega tu objeto <code>firebaseConfig</code> aquí.
+                    </p>
+                    <textarea
+                      value={firebaseConfigInput}
+                      onChange={(e) => setFirebaseConfigInput(e.target.value)}
+                      className="w-full h-32 p-4 font-mono text-xs md:text-sm bg-slate-900 text-green-400 rounded-lg border border-slate-300 outline-none resize-y"
+                      spellCheck={false}
+                    />
+                    <div className="mt-2 text-right">
+                       <button 
+                         onClick={() => setFirebaseConfigInput(JSON.stringify(DEFAULT_FIREBASE_CONFIG, null, 2))}
+                         className="text-xs text-slate-400 hover:text-slate-600 underline"
+                       >
+                         Restaurar defecto
+                       </button>
+                    </div>
                   </div>
-                </>
+                  
+                  <div className="pt-4 border-t border-slate-100">
+                     <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-2">
+                       <UserCircle size={16} />
+                       UID de Prueba (Login Simulado)
+                     </label>
+                     <div className="flex gap-2">
+                       <input 
+                         type="text" 
+                         value={testUid}
+                         onChange={(e) => setTestUid(e.target.value)}
+                         placeholder="Ej: test-user-123"
+                         className="flex-1 p-2 font-mono text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
+                       />
+                     </div>
+                     <p className="text-xs text-slate-400 mt-1">
+                       Se usará este ID para simular permisos de lectura/escritura en rutas protegidas: <code>/users/{'{uid}'}/...</code>
+                     </p>
+                  </div>
+                </div>
               ) : (
                 <div className="space-y-4">
                   <div>
